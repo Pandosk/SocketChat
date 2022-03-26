@@ -3,6 +3,7 @@ import java.net.Socket
 import java.util.*
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.OutputStream
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
@@ -42,6 +43,11 @@ fun testAtomicString() {
 
 data class Message(val author: String, val content: String)
 
+
+/*
+* 1 - Show user their position in the waiting queue
+* 2 - Add support for commands
+* */
 class SocketChatServer(private val port: Int) {
     private val semaphore = Semaphore(MAX_CONNECTIONS)
     private val serverSocket = ServerSocket(port)
@@ -59,8 +65,10 @@ class SocketChatServer(private val port: Int) {
         logger.info("Listening on port $port")
         while (true) {
             semaphore.acquire()
+            // Wait for a vacancy
             val clientSocket = serverSocket.accept()
             logger.info("New client has connected: ${clientSocket.inetAddress}")
+            // Launch a Thread for a unique user
             Thread {
                 handleClient(clientSocket)
             }.also { it.start() }
@@ -89,7 +97,7 @@ class SocketChatServer(private val port: Int) {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } finally {
                 isConnected.set(false)
             }
         }.also { it.start() }
@@ -116,7 +124,7 @@ class SocketChatServer(private val port: Int) {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } finally {
                 isConnected.set(false)
             }
         }.also { it.start() }
@@ -126,5 +134,13 @@ class SocketChatServer(private val port: Int) {
         // Disconnected
         logger.warn("Client has disconnected: ${clientSocket.inetAddress}")
         semaphore.release()
+    }
+}
+
+object CommandHandler {
+    fun handle(command: String, outputStream: OutputStream) {
+        when (command) {
+            "exit" -> { outputStream.write("Bye".toByteArray()); throw Exception("No")}
+        }
     }
 }
