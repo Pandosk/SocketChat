@@ -3,8 +3,10 @@ import java.net.Socket
 import java.util.*
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import java.io.IOException
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 const val PORT = 2022
 const val MAX_CONNECTIONS = 2
@@ -12,6 +14,31 @@ const val MAX_CONNECTIONS = 2
 fun main() {
     SocketChatServer.init(PORT)
 }
+
+class AtomicString(var value: String = "") {
+    val lock = ReentrantLock()
+    fun get(): String =
+        lock.withLock { return value }
+
+    fun set(newValue: String) =
+        lock.withLock { value = newValue }
+
+    fun append(toAppend: String) =
+        lock.withLock { value += toAppend }
+}
+
+/*
+fun testAtomicString() {
+    val sharedString = AtomicString()
+    var i = 0
+    while (i++ < 100) {
+        Thread {
+            sharedString.append("A")
+        }.also { it.start() }
+    }
+    println("String length: ${sharedString.get().length}")
+}
+*/
 
 data class Message(val author: String, val content: String)
 
@@ -28,16 +55,6 @@ class SocketChatServer(private val port: Int) {
         }
     }
 
-    private fun runWithExceptionSafety(block: () -> Unit) {
-        try {
-            block()
-        } catch(e: IOException) {
-            logger.warn("A Client has disconnected: ${e.message}")
-        } finally {
-            semaphore.release()
-        }
-    }
-
     fun handleConnections() {
         logger.info("Listening on port $port")
         while (true) {
@@ -51,43 +68,47 @@ class SocketChatServer(private val port: Int) {
     }
 
     private fun handleClient(clientSocket: Socket) {
-        // Holds the socket client username value 
-        val clientUsername = Collections.synchronizedList(mutableListOf<String?>(null))
+        // Holds the socket client username value
+        val clientUsername = AtomicString()
+
+        val isConnected = AtomicBoolean(true)
 
         // Thread to read input from the client
         Thread { 
-            runWithExceptionSafety {
+            try {
                 clientSocket.getInputStream().use { input ->
                     while (true) {
                         val userInput = input.bufferedReader().readLine()
-                        if (clientUsername[0] == null) {
+                        val userName = clientUsername.get()
+                        if (userName == "") {
                             // Set username
-                            clientUsername[0] = userInput
+                            clientUsername.set(userInput)
                             continue
+                        } else {
+                            messages.add(Message(author = userName, content = userInput))
                         }
-                        messages.add(Message(author = clientUsername[0]!!, content = userInput))
-
                     }
                 }
+            } catch (e: Exception) {
+                isConnected.set(false)
             }
-
         }.also { it.start() }
         // Thread to send messages to the client
         Thread {
-            runWithExceptionSafety {
+            try {
                 clientSocket.getOutputStream().use { output ->
                     var lastMessageIndex = 0
                     output.write("Enter your username: ".toByteArray())
                     while (true) {
                         // Wait until user enters username
-                        if (clientUsername[0] == null)
+                        if (clientUsername.get() == "")
                             continue
 
                         // If there is a new message
                         if (lastMessageIndex < messages.size) {
                             // Update client with all the missing messages
                             while (lastMessageIndex < messages.size) {
-                                if (messages[lastMessageIndex].author != clientUsername[0]) {
+                                if (messages[lastMessageIndex].author != clientUsername.get()) {
                                     output.write(" > (${messages[lastMessageIndex].author}) : ${messages[lastMessageIndex].content}\n".toByteArray())
                                 }
                                 lastMessageIndex++
@@ -95,7 +116,15 @@ class SocketChatServer(private val port: Int) {
                         }
                     }
                 }
+            } catch (e: Exception) {
+                isConnected.set(false)
             }
         }.also { it.start() }
+
+        while (isConnected.get());
+
+        // Disconnected
+        logger.warn("Client has disconnected: ${clientSocket.inetAddress}")
+        semaphore.release()
     }
 }
